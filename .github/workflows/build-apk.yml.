@@ -1,0 +1,84 @@
+name: Build APK
+
+# Builds an installable APK on every push to main, or when you press "Run workflow".
+# No secrets or keys needed. The APK is attached to a GitHub Release so you can
+# download it straight on your phone.
+#
+# Phone friendly: you can upload just SmsSpend.zip to the repo root.
+# This workflow unzips it by itself if the project files are not found.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to create the Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find project folder
+        id: proj
+        run: |
+          echo "Files in the repository:"
+          find . -maxdepth 3 -not -path './.git/*' -not -path './.git' | sort | head -80
+
+          F=$(find . -name settings.gradle.kts -not -path './.git/*' | head -1)
+
+          if [ -z "$F" ]; then
+            Z=$(find . -name '*.zip' -not -path './.git/*' | head -1)
+            if [ -n "$Z" ]; then
+              echo "Project files not found, unzipping $Z"
+              mkdir -p _unzipped
+              unzip -q -o "$Z" -d _unzipped
+              F=$(find _unzipped -name settings.gradle.kts | head -1)
+            fi
+          fi
+
+          if [ -z "$F" ]; then
+            echo "::error::settings.gradle.kts not found. Upload SmsSpend.zip (or the whole project folder) to the repository."
+            exit 1
+          fi
+
+          echo "dir=$(dirname "$F")" >> "$GITHUB_OUTPUT"
+          echo "Project folder: $(dirname "$F")"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Installs Gradle itself, so no gradlew file is needed
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      # Tests are informational: a failing test will not stop the APK being built
+      - name: Unit tests
+        continue-on-error: true
+        run: gradle -p "${{ steps.proj.outputs.dir }}" :app:testDebugUnitTest --console=plain
+
+      - name: Build APK
+        run: gradle -p "${{ steps.proj.outputs.dir }}" :app:assembleDebug --console=plain
+
+      - name: Name the APK
+        run: cp "${{ steps.proj.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk" SmsSpend-${{ github.run_number }}.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmsSpend-apk
+          path: SmsSpend-${{ github.run_number }}.apk
+          if-no-files-found: error
+
+      - name: Publish to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: SMS Spend build ${{ github.run_number }}
+          files: SmsSpend-${{ github.run_number }}.apk
+          make_latest: true
